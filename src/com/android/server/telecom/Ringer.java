@@ -120,9 +120,11 @@ public class Ringer {
     };
 
     private static final int[] SIMPLE_VIBRATION_AMPLITUDE = {
-            0, // No delay before starting
-            255, // Vibrate full amplitude
-            0, // No amplitude while waiting
+        0, // No delay before starting
+        255, // Vibrate full amplitude
+        0, // No amplitude while waiting
+        255, // Vibrate full amplitude
+        0, // No amplitude while waiting
     };
 
     /**
