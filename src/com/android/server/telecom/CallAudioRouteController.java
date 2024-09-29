@@ -1118,8 +1118,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         if (BT_AUDIO_ROUTE_TYPES.contains(type)) {
             return getBluetoothRoute(type, deviceAttr.getAddress());
         } else {
-            return mTypeRoutes.get(deviceAttr.getType());
-
+            return mTypeRoutes.get(type);
         }
     }
 
@@ -1222,6 +1221,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     public AudioRoute getBaseRoute(boolean includeBluetooth, String btAddressToExclude) {
         AudioRoute destRoute = getPreferredAudioRouteFromStrategy();
+        Log.i(this, "getBaseRoute: preferred audio route is %s", destRoute);
         if (destRoute == null || (destRoute.getBluetoothAddress() != null && (!includeBluetooth
                 || destRoute.getBluetoothAddress().equals(btAddressToExclude)))) {
             destRoute = getPreferredAudioRouteFromDefault(includeBluetooth, btAddressToExclude);
