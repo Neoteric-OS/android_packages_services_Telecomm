@@ -358,7 +358,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         mActiveBluetoothDevice = null;
         mTypeRoutes = new ArrayMap<>();
         mStreamingRoutes = new HashSet<>();
-        mPendingAudioRoute = new PendingAudioRoute(this, mAudioManager, mBluetoothRouteManager);
+        mPendingAudioRoute = new PendingAudioRoute(this, mAudioManager, mBluetoothRouteManager,
+                mFeatureFlags);
         mStreamingRoute = new AudioRoute(AudioRoute.TYPE_STREAMING, null, null);
         mStreamingRoutes.add(mStreamingRoute);
 
@@ -989,7 +990,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mPendingAudioRoute.clearPendingMessages();
             onCurrentRouteChanged();
             if (mFeatureFlags.telecomMetricsSupport()) {
-                mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute);
+                mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, true);
             }
         }
     }
@@ -1474,5 +1475,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mFocusType = NO_FOCUS;
         }
         mIsActive = active;
+    }
+
+    void fallBack(String btAddressToExclude) {
+        mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, false);
+        sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE,
+                btAddressToExclude);
     }
 }
