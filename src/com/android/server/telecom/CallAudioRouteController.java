@@ -63,6 +63,7 @@ import com.android.server.telecom.metrics.ErrorStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -379,7 +380,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     public void initialize() {
         mAvailableRoutes = new HashSet<>();
         mCallSupportedRoutes = new HashSet<>();
-        mBluetoothRoutes = new LinkedHashMap<>();
+        mBluetoothRoutes = Collections.synchronizedMap(new LinkedHashMap<>());
         mActiveDeviceCache = new HashMap<>();
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_SCO, null);
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_HA, null);
