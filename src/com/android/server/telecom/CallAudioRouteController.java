@@ -351,6 +351,9 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                         case MUTE_EXTERNALLY_CHANGED:
                             handleMuteChanged(mAudioManager.isMicrophoneMute());
                             break;
+                        case TOGGLE_MUTE:
+                            handleMuteChanged(!mIsMute);
+                            break;
                         case SWITCH_FOCUS:
                             focus = msg.arg1;
                             handleEndTone = (int) ((SomeArgs) msg.obj).arg2;
@@ -575,7 +578,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             }
             // override pending route while keep waiting for still pending messages for the
             // previous pending route
-            mPendingAudioRoute.setOrigRoute(mIsActive, mPendingAudioRoute.getDestRoute());
+            mPendingAudioRoute.setOrigRoute(mIsActive /* origin */,
+                    mPendingAudioRoute.getDestRoute(), active /* dest */);
         } else {
             if (mCurrentRoute.equals(destRoute) && (mIsActive == active)) {
                 return;
@@ -584,10 +588,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     mIsActive, destRoute, active);
             // route to pending route
             if (getCallSupportedRoutes().contains(mCurrentRoute)) {
-                mPendingAudioRoute.setOrigRoute(mIsActive, mCurrentRoute);
+                mPendingAudioRoute.setOrigRoute(mIsActive /* origin */, mCurrentRoute,
+                        active /* dest */);
             } else {
                 // Avoid waiting for pending messages for an unavailable route
-                mPendingAudioRoute.setOrigRoute(mIsActive, DUMMY_ROUTE);
+                mPendingAudioRoute.setOrigRoute(mIsActive /* origin */, DUMMY_ROUTE,
+                        active /* dest */);
             }
             mIsPending = true;
         }
@@ -986,12 +992,16 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
      * @return {@link AudioRoute} of the BT device.
      */
     private AudioRoute getArbitraryBluetoothDevice() {
-        if (mActiveBluetoothDevice != null) {
-            return getBluetoothRoute(mActiveBluetoothDevice.first, mActiveBluetoothDevice.second);
-        } else if (!mBluetoothRoutes.isEmpty()) {
-            return mBluetoothRoutes.keySet().stream().toList().get(mBluetoothRoutes.size() - 1);
+        synchronized (mLock) {
+            if (mActiveBluetoothDevice != null) {
+                return getBluetoothRoute(
+                    mActiveBluetoothDevice.first, mActiveBluetoothDevice.second);
+            } else if (!mBluetoothRoutes.isEmpty()) {
+                return mBluetoothRoutes.keySet().stream().toList()
+                    .get(mBluetoothRoutes.size() - 1);
+            }
+            return null;
         }
-        return null;
     }
 
     private void handleSwitchHeadset() {
@@ -1458,8 +1468,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 continue;
             }
             // Check if the most recently active device is a watch device.
-            boolean isActiveDevice = mActiveBluetoothDevice != null
+            boolean isActiveDevice;
+            synchronized (mLock) {
+                isActiveDevice = mActiveBluetoothDevice != null
                     && device.getAddress().equals(mActiveBluetoothDevice.second);
+            }
             if (i == (bluetoothRoutes.size() - 1) && mBluetoothRouteManager.isWatch(device)
                     && (device.equals(mCallAudioState.getActiveBluetoothDevice())
                     || isActiveDevice)) {
@@ -1573,29 +1586,32 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
      *                           address of the device.
      */
     public void updateActiveBluetoothDevice(Pair<Integer, String> device) {
-        mActiveDeviceCache.put(device.first, device.second);
-        // Update most recently active device if address isn't null (meaning some device is active).
-        if (device.second != null) {
-            mActiveBluetoothDevice = device;
-        } else {
-            // If a device was removed, check to ensure that no other device is still considered
-            // active.
-            boolean hasActiveDevice = false;
-            List<Map.Entry<Integer, String>> activeBtDevices = new ArrayList<>(
-                    mActiveDeviceCache.entrySet());
-            for (Map.Entry<Integer,String> activeDevice : activeBtDevices) {
-                Integer btAudioType = activeDevice.getKey();
-                String address = activeDevice.getValue();
-                if (address != null) {
-                    hasActiveDevice = true;
-                    if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                        mActiveBluetoothDevice = new Pair<>(btAudioType, address);
+        synchronized (mLock) {
+            mActiveDeviceCache.put(device.first, device.second);
+            // Update most recently active device if address isn't null (meaning
+            // some device is active).
+            if (device.second != null) {
+                mActiveBluetoothDevice = device;
+            } else {
+                // If a device was removed, check to ensure that no other device is
+                //still considered active.
+                boolean hasActiveDevice = false;
+                List<Map.Entry<Integer, String>> activeBtDevices =
+                        new ArrayList<>(mActiveDeviceCache.entrySet());
+                for (Map.Entry<Integer, String> activeDevice : activeBtDevices) {
+                    Integer btAudioType = activeDevice.getKey();
+                    String address = activeDevice.getValue();
+                    if (address != null) {
+                        hasActiveDevice = true;
+                        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+                            mActiveBluetoothDevice = new Pair<>(btAudioType, address);
+                        }
+                        break;
                     }
-                    break;
                 }
-            }
-            if (!hasActiveDevice) {
-                mActiveBluetoothDevice = null;
+                if (!hasActiveDevice) {
+                    mActiveBluetoothDevice = null;
+                }
             }
         }
     }
