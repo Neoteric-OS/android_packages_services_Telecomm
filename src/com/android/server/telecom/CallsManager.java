@@ -2406,26 +2406,8 @@ public class CallsManager extends Call.ListenerBase
                                 }
                                 return CompletableFuture.completedFuture(null);
                             }
-                            // For adhoc conference calls, if there is only one selectable phone
-                            // account, the call is placed automatically. In DSDS transition mode
-                            // the user needs to be warned beforehand in cases where the call
-                            // on the other SUB will be disconnected ie, on the non-ACTIVE sub
-                            // Use SELECT_PHONE_ACCOUNT, which is handled in Dialer to notify
-                            boolean adhocNeedsAccountSelection = false;
-                            if (callToPlace.isAdhocConferenceCall() &&
-                                        getTelephonyManager().isDsdsTransitionMode()) {
-                                if (!arePhoneAccountsEqual(
-                                        accountSuggestions.get(0).getPhoneAccountHandle(),
-                                        (getActiveCall() != null) ?
-                                        getActiveCall().getTargetPhoneAccount(): null)) {
-                                    adhocNeedsAccountSelection = true;
-                                }
-                            }
-                            Log.i(CallsManager.this, "dialer adhocNeedsAccountSelection: " +
-                                    adhocNeedsAccountSelection);
-                            boolean needsAccountSelection = (accountSuggestions.size() > 1 ||
-                                    adhocNeedsAccountSelection) && !callToPlace.isEmergencyCall() &&
-                                    !isSelfManaged;
+                            boolean needsAccountSelection = accountSuggestions.size() > 1
+                                    && !callToPlace.isEmergencyCall() && !isSelfManaged;
                             if (!needsAccountSelection) {
                                 return CompletableFuture.completedFuture(Pair.create(callToPlace,
                                         accountSuggestions.get(0).getPhoneAccountHandle()));
@@ -3721,9 +3703,9 @@ public class CallsManager extends Call.ListenerBase
         String activeCallId = null;
         if (activeCall != null && !activeCall.isLocallyDisconnecting()) {
             activeCallId = activeCall.getId();
-            Log.d(TAG, "unholdCall isDsdaOrDsdsTransitionMode = " + isDsdaOrDsdsTransitionMode());
+            Log.d(TAG, "unholdCall DSDA = " + isConcurrentCallsPossible());
             if (canHold(activeCall)) {
-                if (!isDsdaOrDsdsTransitionMode() || !areFromSameSource(activeCall, call)
+                if (!isConcurrentCallsPossible() || !areFromSameSource(activeCall, call)
                         || isHfpCallPresent()) {
                     // Follow legacy behavior for non DSDA and different source/connection
                     // service use case
@@ -3731,8 +3713,8 @@ public class CallsManager extends Call.ListenerBase
                     Log.addEvent(activeCall, LogUtils.Events.SWAP, "To " + call.getId());
                     Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCall.getId());
                 } else {
-                    // This is dsda/dsds transition mode swap use case.
-                    // Let ConnectionService handle hold and unhold for this case
+                    // This is dsda swap use case. Let ConnectionService handle hold
+                    // and unhold for this case
                     Log.i(TAG, "unholdCall in DSDA across subs");
                 }
             } else {
@@ -3749,7 +3731,7 @@ public class CallsManager extends Call.ListenerBase
                         // emergency call.
                         return;
                     }
-                } else if (!isDsdaOrDsdsTransitionMode()) {
+                } else if (!isConcurrentCallsPossible()) {
                     activeCall.hold("Swap to " + call.getId());
                 }
             }
@@ -3891,7 +3873,7 @@ public class CallsManager extends Call.ListenerBase
         // Similarly, the emergency call should be attempted over the same PhoneAccount as the
         // ongoing call. However, if the ongoing call is over cross-SIM registration, then the
         // emergency call will be attempted over a different Phone object at a later stage.
-        if (isEmergency || !isDsdaOrDsdsTransitionMode()) {
+        if (isEmergency || !isConcurrentCallsPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
@@ -4214,8 +4196,6 @@ public class CallsManager extends Call.ListenerBase
         Log.i(this, "holdActiveCallForNewCall, newCall: %s, activeCall: %s", call.getId(),
                 (activeCall == null ? "<none>" : activeCall.getId()));
         if (activeCall != null && activeCall != call) {
-            Log.d(TAG, "holdActiveCallForNewCall isDsdaOrDsdsTransitionMode = " +
-                    isDsdaOrDsdsTransitionMode());
             // Handle if any HFP call is present otherwise fall back to legacy handling
             if (isHfpCallPresent()) {
                 Call heldCall = getHeldCallAcrossPhoneAccounts();
@@ -4237,9 +4217,10 @@ public class CallsManager extends Call.ListenerBase
                 }
                 return true;
             }
-            if (isDsdaOrDsdsTransitionMode() && !arePhoneAccountsEqual(
+            Log.d(TAG, "holdActiveCallForNewCall DSDA = " + isConcurrentCallsPossible());
+            if (isConcurrentCallsPossible() && !arePhoneAccountsEqual(
                     call.getTargetPhoneAccount(), activeCall.getTargetPhoneAccount())) {
-                // For DSDA/DSDS transition cross sub answer, let connection service handle this
+                // For DSDA cross sub answer, let connection service handle this
                 return false;
             }
             if (canHold(activeCall)) {
@@ -4755,8 +4736,7 @@ public class CallsManager extends Call.ListenerBase
         }
 
         int count = 0;
-        // Allow for 4 calls in DSDA/DSDS Transition mode
-        int maxTopLevelCalls = isDsdaOrDsdsTransitionMode() ?
+        int maxTopLevelCalls = TelephonyManager.isConcurrentCallsPossible() ?
                 MAXIMUM_TOP_LEVEL_CALLS_DSDA : MAXIMUM_TOP_LEVEL_CALLS;
         for (Call call : mCalls) {
             if (call.isEmergencyCall()) {
@@ -5490,7 +5470,7 @@ public class CallsManager extends Call.ListenerBase
             return true;
         }
         // Check if we are exceeding overall maximum ringing call count.
-        int maxAllowedManagedRingingCalls = isDsdaOrDsdsTransitionMode() ?
+        int maxAllowedManagedRingingCalls = TelephonyManager.isConcurrentCallsPossible() ?
                 MAXIMUM_RINGING_CALLS_DSDA : MAXIMUM_RINGING_CALLS;
         return maxAllowedManagedRingingCalls <= getNumCallsWithState(false /* isSelfManaged */,
                 exceptCall, null /*phoneAccountHandle*/, CallState.RINGING, CallState.ANSWERED);
@@ -7381,8 +7361,9 @@ public class CallsManager extends Call.ListenerBase
         return Objects.equals(pah1, pah2);
     }
 
-    private boolean isDsdaOrDsdsTransitionMode() {
-        return getTelephonyManager().isDsdaOrDsdsTransitionMode();
+    // Check for concurrent calls and package same as TelephonyConnectionService
+    private boolean isConcurrentCallsPossible() {
+        return getTelephonyManager().isConcurrentCallsPossible();
     }
 
     /* Returns the first HELD call on the same sub and managed by same ConnectionService */
