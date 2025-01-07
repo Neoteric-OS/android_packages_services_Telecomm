@@ -3853,7 +3853,7 @@ public class CallsManager extends Call.ListenerBase
         // Similarly, the emergency call should be attempted over the same PhoneAccount as the
         // ongoing call. However, if the ongoing call is over cross-SIM registration, then the
         // emergency call will be attempted over a different Phone object at a later stage.
-        if (isEmergency || !getTelephonyManager().isConcurrentCallsPossible()) {
+        if (isEmergency || !isDsdaCallingPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
