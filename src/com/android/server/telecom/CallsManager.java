@@ -567,9 +567,6 @@ public class CallsManager extends Call.ListenerBase
     private Call mDisconnectingCall = null;
 
     private String mCrsCallId = null;
-    // Used to indicate that an error dialog should be shown if set to true
-    // Stored within intent extras and should be removed once the dialog is shown
-    private final String EXTRA_KEY_DISPLAY_ERROR_DIALOG = "EXTRA_KEY_DISPLAY_ERROR_DIALOG";
 
     /**
      * Listener to PhoneAccountRegistrar events.
@@ -6505,10 +6502,7 @@ public class CallsManager extends Call.ListenerBase
         Bundle extras = call.getIntentExtras();
         if (call.getState() == CallState.DISCONNECTED && (mMmiUtils.isPotentialMMICode(
                 call.getHandle())
-                || mMmiUtils.isPotentialInCallMMICode(call.getHandle()) ||
-                (extras != null && extras.getBoolean(EXTRA_KEY_DISPLAY_ERROR_DIALOG, false)))
-                && !mCalls.contains(call)) {
-            extras.remove(EXTRA_KEY_DISPLAY_ERROR_DIALOG);
+                || mMmiUtils.isPotentialInCallMMICode(call.getHandle()))) {
             DisconnectCause disconnectCause = call.getDisconnectCause();
             if (!TextUtils.isEmpty(disconnectCause.getDescription()) && ((disconnectCause.getCode()
                     == DisconnectCause.ERROR) || (disconnectCause.getCode()
