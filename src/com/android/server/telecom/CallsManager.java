@@ -299,7 +299,6 @@ public class CallsManager extends Call.ListenerBase
     private static final int MAXIMUM_DIALING_CALLS = 1;
     private static final int MAXIMUM_OUTGOING_CALLS = 1;
     private static final int MAXIMUM_TOP_LEVEL_CALLS = 2;
-    private static final int MAXIMUM_TOP_LEVEL_CALLS_DSDA = 4;
     private static final int MAXIMUM_SELF_MANAGED_CALLS = 10;
 
     /**
@@ -572,8 +571,6 @@ public class CallsManager extends Call.ListenerBase
     // Stored within intent extras and should be removed once the dialog is shown
     private final String EXTRA_KEY_DISPLAY_ERROR_DIALOG = "EXTRA_KEY_DISPLAY_ERROR_DIALOG";
 
-    private final String ACTION_MSIM_VOICE_CAPABILITY_CHANGED =
-            "org.codeaurora.intent.action.MSIM_VOICE_CAPABILITY_CHANGED";
     /**
      * Listener to PhoneAccountRegistrar events.
      */
@@ -609,8 +606,6 @@ public class CallsManager extends Call.ListenerBase
                     || BlockedNumbersManager
                     .ACTION_BLOCK_SUPPRESSION_STATE_CHANGED.equals(action)) {
                 updateEmergencyCallNotificationAsync(context);
-            } else if (ACTION_MSIM_VOICE_CAPABILITY_CHANGED.equals(action)) {
-                updateCanAddCall();
             }
         }
     };
@@ -873,7 +868,6 @@ public class CallsManager extends Call.ListenerBase
                 CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED);
         intentFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
         intentFilter.addAction(BlockedNumbersManager.ACTION_BLOCK_SUPPRESSION_STATE_CHANGED);
-        intentFilter.addAction(ACTION_MSIM_VOICE_CAPABILITY_CHANGED);
         context.registerReceiver(mReceiver, intentFilter, Context.RECEIVER_EXPORTED);
         mGraphHandlerThreads = new LinkedList<>();
         mCallAnomalyWatchdog = callAnomalyWatchdog;
@@ -4736,8 +4730,6 @@ public class CallsManager extends Call.ListenerBase
         }
 
         int count = 0;
-        int maxTopLevelCalls = TelephonyManager.isConcurrentCallsPossible() ?
-                MAXIMUM_TOP_LEVEL_CALLS_DSDA : MAXIMUM_TOP_LEVEL_CALLS;
         for (Call call : mCalls) {
             if (call.isEmergencyCall()) {
                 // We never support add call if one of the calls is an emergency call.
@@ -4760,8 +4752,7 @@ public class CallsManager extends Call.ListenerBase
             // we could put InCallServices into a state where they are showing two calls but
             // also support add-call. Technically it's right, but overall looks better (UI-wise)
             // and acts better if we wait until the call is removed.
-
-            if (count >= maxTopLevelCalls) {
+            if (count >= MAXIMUM_TOP_LEVEL_CALLS) {
                 return false;
             }
         }
