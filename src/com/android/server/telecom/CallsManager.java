@@ -1153,9 +1153,7 @@ public class CallsManager extends Call.ListenerBase
                     incomingCall.setMissedReason(AUTO_MISSED_MAXIMUM_RINGING);
                     autoMissCallAndLog(incomingCall, result);
                 }
-            } else if (hasMaximumManagedDialingCalls(incomingCall) &&
-                    arePhoneAccountEquals(getDialingOrPullingCall().getTargetPhoneAccount(),
-                    incomingCall.getTargetPhoneAccount())) {
+            } else if (hasMaximumManagedDialingCalls(incomingCall)) {
                 if (shouldSilenceInsteadOfReject(incomingCall)) {
                     incomingCall.silence();
                 } else {
@@ -4764,11 +4762,6 @@ public class CallsManager extends Call.ListenerBase
         return getFirstCallWithState(CallState.DIALING, CallState.ACTIVE);
     }
 
-    /** Helper function to retrieve the dialing or pulling call */
-    private Call getDialingOrPullingCall() {
-        return getFirstCallWithState(CallState.DIALING, CallState.PULLING);
-    }
-
     public Call getHeldCallByConnectionService(PhoneAccountHandle targetPhoneAccount) {
         Optional<Call> heldCall = mCalls.stream()
                 .filter(call -> PhoneAccountHandle.areFromSamePackage(call.getTargetPhoneAccount(),
@@ -7324,10 +7317,6 @@ public class CallsManager extends Call.ListenerBase
 
     public CallStreamingController getCallStreamingController() {
         return mCallStreamingController;
-    }
-
-    private boolean arePhoneAccountEquals(PhoneAccountHandle pah1, PhoneAccountHandle pah2) {
-        return Objects.equals(pah1, pah2);
     }
 
     /**
