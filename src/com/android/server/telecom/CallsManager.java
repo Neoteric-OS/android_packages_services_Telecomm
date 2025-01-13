@@ -56,6 +56,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.PackageManager.ResolveInfoFlags;
 import android.content.pm.ResolveInfo;
 import android.content.pm.UserInfo;
@@ -508,6 +509,7 @@ public class CallsManager extends Call.ListenerBase
     private final com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
 
     private final IncomingCallFilterGraphProvider mIncomingCallFilterGraphProvider;
+    private final CallAudioWatchdog mCallAudioWatchDog;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
             new ConnectionServiceFocusManager.CallsManagerRequester() {
@@ -672,6 +674,31 @@ public class CallsManager extends Call.ListenerBase
         mCallerInfoLookupHelper = callerInfoLookupHelper;
         mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
         mIncomingCallFilterGraphProvider = incomingCallFilterGraphProvider;
+        if (featureFlags.enableCallAudioWatchdog()) {
+            mCallAudioWatchDog = new CallAudioWatchdog(
+                    mContext.getSystemService(AudioManager.class),
+                    new CallAudioWatchdog.PhoneAccountRegistrarProxy() {
+                        @Override
+                        public boolean hasPhoneAccountForUid(int uid) {
+                            return mPhoneAccountRegistrar.hasPhoneAccountForUid(uid);
+                        }
+
+                        @Override
+                        public int getUidForPhoneAccountHandle(PhoneAccountHandle handle) {
+                            Context userContext = mContext.createContextAsUser(
+                                    handle.getUserHandle(),
+                                    0 /*flags */);
+                            try {
+                                return userContext.getPackageManager().getPackageUid(
+                                        handle.getComponentName().getPackageName(), 0 /* flags */);
+                            } catch (NameNotFoundException nfe) {
+                                return -1;
+                            }
+                        }
+                    }, clockProxy, mHandler);
+        } else {
+            mCallAudioWatchDog = null;
+        }
 
         mDtmfLocalTonePlayer =
                 new DtmfLocalTonePlayer(new DtmfLocalTonePlayer.ToneGeneratorProxy());
@@ -803,6 +830,9 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mPhoneStateBroadcaster);
         mListeners.add(mVoipCallMonitor);
         mListeners.add(mCallStreamingNotification);
+        if (featureFlags.enableCallAudioWatchdog()) {
+            mListeners.add(mCallAudioWatchDog);
+        }
 
         mVoipCallMonitor.startMonitor();
 
@@ -6557,6 +6587,10 @@ public class CallsManager extends Call.ListenerBase
             pw.increaseIndent();
             mConnectionSvrFocusMgr.dump(pw);
             pw.decreaseIndent();
+        }
+
+        if (mCallAudioWatchDog != null) {
+            mCallAudioWatchDog.dump(pw);
         }
     }
 
