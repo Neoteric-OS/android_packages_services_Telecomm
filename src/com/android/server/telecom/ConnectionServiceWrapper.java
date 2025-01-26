@@ -96,7 +96,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         ConnectionServiceFocusManager.ConnectionServiceFocus, CallSourceService {
 
     /**
-     * Anomaly Report UUIDs and corresponding error descriptions specific to CallsManager.
+     * Anomaly Report UUIDs and corresponding error descriptions specific to
+     * ConnectionServiceWrapper.
      */
     public static final UUID CREATE_CONNECTION_TIMEOUT_ERROR_UUID =
             UUID.fromString("54b7203d-a79f-4cbd-b639-85cd93a39cbb");
@@ -106,6 +107,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             UUID.fromString("caafe5ea-2472-4c61-b2d8-acb9d47e13dd");
     public static final String CREATE_CONFERENCE_TIMEOUT_ERROR_MSG =
             "Timeout expired before Telecom conference was created.";
+    public static final UUID NULL_SCHEDULED_EXECUTOR_ERROR_UUID =
+            UUID.fromString("af6b293b-239f-4ccf-bf3a-db212594e29d");
+    public static final String NULL_SCHEDULED_EXECUTOR_ERROR_MSG =
+            "Scheduled executor is null when creating connection/conference.";
 
     private static final String TELECOM_ABBREVIATION = "cast";
     private static final long SERVICE_BINDING_TIMEOUT = 15000L;
@@ -1656,12 +1661,18 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         }
                     }
                 };
-                // Post cleanup to the executor service and cache the future, so we can cancel it if
-                // needed.
-                ScheduledFuture<?> future = mScheduledExecutor.schedule(r.getRunnableToCancel(),
-                        SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
-                mScheduledFutureMap.put(call, future);
-
+                if (mScheduledExecutor != null) {
+                    // Post cleanup to the executor service and cache the future,
+                    // so we can cancel it if needed.
+                    ScheduledFuture<?> future = mScheduledExecutor.schedule(
+                        r.getRunnableToCancel(),SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
+                    mScheduledFutureMap.put(call, future);
+                } else {
+                    Log.w(this, "createConference: Scheduled executor is null");
+                    mAnomalyReporter.reportAnomaly(
+                        NULL_SCHEDULED_EXECUTOR_ERROR_UUID,
+                        NULL_SCHEDULED_EXECUTOR_ERROR_MSG);
+                }
                 if (mServiceInterface != null) {
                     try {
                         mServiceInterface.createConference(
@@ -1793,11 +1804,18 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         }
                     }
                 };
-                // Post cleanup to the executor service and cache the future, so we can cancel it if
-                // needed.
-                ScheduledFuture<?> future = mScheduledExecutor.schedule(r.getRunnableToCancel(),
-                        SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
-                mScheduledFutureMap.put(call, future);
+                if (mScheduledExecutor != null) {
+                    // Post cleanup to the executor service and cache the future,
+                    // so we can cancel it if needed.
+                    ScheduledFuture<?> future = mScheduledExecutor.schedule(
+                        r.getRunnableToCancel(),SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
+                    mScheduledFutureMap.put(call, future);
+                } else {
+                    Log.w(this, "createConnection: Scheduled executor is null");
+                    mAnomalyReporter.reportAnomaly(
+                        NULL_SCHEDULED_EXECUTOR_ERROR_UUID,
+                        NULL_SCHEDULED_EXECUTOR_ERROR_MSG);
+                }
                 try {
                     if (mFlags.cswServiceInterfaceIsNull() && mServiceInterface == null) {
                         if (mFlags.dontTimeoutDestroyedCalls()) {
