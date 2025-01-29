@@ -2852,10 +2852,7 @@ public class CallsManager extends Call.ListenerBase
                 // The target phone account is valid and was found.
                 return CompletableFuture.completedFuture(Arrays.asList(targetPhoneAccountHandle));
             }
-            if (getTelephonyManager().isDsdsTransitionSupported() &&
-                    TelephonyUtil.isPstnComponentName(
-                    targetPhoneAccountHandle.getComponentName())) {
-                Log.v(this, "findOutgoingCallPhoneAccount: force empty list for dsds transition");
+            if (getTelephonyManager().isDsdsTransitionSupported()) {
                 accounts = Collections.emptyList();
             }
         }
