@@ -12,6 +12,10 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Changes from Qualcomm Innovation Center, Inc. are provided under the following license:
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
 package com.android.server.telecom;
@@ -1896,7 +1900,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mTargetPhoneAccountHandle;
     }
 
-    @VisibleForTesting
     public PhoneAccountHandle getTargetPhoneAccount() {
         return mTargetPhoneAccountHandle;
     }
@@ -3541,7 +3544,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return Contacts.getLookupUri(mCallerInfo.getContactId(), mCallerInfo.lookupKey);
     }
 
-    Uri getRingtone() {
+    @VisibleForTesting
+    public Uri getRingtone() {
         return mCallerInfo == null ? null : mCallerInfo.contactRingtoneUri;
     }
 
@@ -4715,6 +4719,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * the history as an audio call.
      */
     private void updateVideoHistoryViaState(int oldState, int newState) {
+        // Video state is audio only when it is visualized voice call with VT-RX call type
+        if (isVisualizedVoiceCall()) {
+            mVideoStateHistory = VideoProfile.STATE_AUDIO_ONLY;
+            return;
+        }
+
         if ((oldState == CallState.DIALING && newState == CallState.ACTIVE)
                 || (oldState == CallState.RINGING && newState == CallState.ANSWERED)) {
             mVideoStateHistory = mVideoState;
@@ -4726,7 +4736,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             }
         } else if (((oldState == CallState.DIALING && newState == CallState.DISCONNECTED)
                 || (oldState == CallState.RINGING && newState == CallState.DISCONNECTED))
-                && (mCallsManager.isVideoCrbtVoLteCall(mVideoState)
+                && (isVideoCrbtForVoLteCall()
                 || isVideoCrsForVoLteCall())) {
             // For disconnecting Video CRBT/CRS for VoLTE call by APM or other abnormal scenarios
             mVideoStateHistory = VideoProfile.STATE_AUDIO_ONLY;
@@ -4738,6 +4748,21 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public boolean isVideoCrsForVoLteCall() {
         return isCrsCall() && getOriginalCallType() == VideoProfile.STATE_AUDIO_ONLY;
+    }
+
+    public boolean isVideoCrbtForVoLteCall() {
+        if (mExtras == null) {
+            return false;
+        }
+        return mExtras.getBoolean(QtiCallConstants.EXTRA_IS_CRBT_CALL, false);
+    }
+
+    public boolean isVisualizedVoiceCall() {
+        if (mExtras == null) {
+            return false;
+        }
+        return mExtras.getBoolean(QtiCallConstants.EXTRA_IS_VISUALIZED_VOICE_CALL, false)
+                && mVideoState == VideoProfile.STATE_RX_ENABLED;
     }
 
     /**
