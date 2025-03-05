@@ -2160,12 +2160,16 @@ public class TelecomServiceImpl {
                             + " to start conference call");
                 }
                 // Binder is clearing the identity, so we need to keep the store the handle
+// QTI_BEGIN: 2024-04-29: Telephony: Conference : Fix the user handle being passed to Telecom
                 UserHandle currentUserHandle = Binder.getCallingUserHandle();
+// QTI_END: 2024-04-29: Telephony: Conference : Fix the user handle being passed to Telecom
                 long token = Binder.clearCallingIdentity();
                 event.setResult(ApiStats.RESULT_NORMAL);
                 try {
                     mCallsManager.startConference(participants, extras, callingPackage,
+// QTI_BEGIN: 2024-04-29: Telephony: Conference : Fix the user handle being passed to Telecom
                             currentUserHandle);
+// QTI_END: 2024-04-29: Telephony: Conference : Fix the user handle being passed to Telecom
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -3174,8 +3178,10 @@ public class TelecomServiceImpl {
             }
 
             if (videoState == DEFAULT_VIDEO_STATE || !isValidAcceptVideoState(videoState)) {
+// QTI_BEGIN: 2023-09-13: Telephony: Fix video CRS for VoLTE call is answered as video call through KEYCODE_CALL
                 videoState = call.isVideoCrsForVoLteCall()
                         ? VideoProfile.STATE_AUDIO_ONLY : call.getVideoState();
+// QTI_END: 2023-09-13: Telephony: Fix video CRS for VoLTE call is answered as video call through KEYCODE_CALL
             }
             mCallsManager.answerCall(call, videoState);
         }
