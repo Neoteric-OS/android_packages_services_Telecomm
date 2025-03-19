@@ -62,6 +62,7 @@ import com.android.server.telecom.metrics.ErrorStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.stats.CallFailureCause;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -251,6 +252,42 @@ public class CallSequencingController {
                         + "activeCall: %s", call.getId(),
                 (activeCall == null ? "<none>" : activeCall.getId()));
         if (activeCall != null && activeCall != call) {
+            if (mCallsManager.isHfpCallPresent()) {
+                Call heldCall = mCallsManager.getFirstCallWithState(CallState.ON_HOLD);
+                CompletableFuture<Boolean> disconnectFutureHfp;
+                if (heldCall != null) {
+                    boolean heldCallIsHfp = mCallsManager.isCallHfp(heldCall);
+                    if (mCallsManager.supportsHold(activeCall)) {
+                        Log.i(this, "holdActiveCallForNewCall: hold active call");
+                        // We don't wamt to use futures if the held call is HFP because
+                        // it won't be disconnected right away and the hold will fail.
+                        if (heldCallIsHfp) {
+                            Log.i(this, "holdActiveCallForNewCall: Held HFP call present.");
+                            heldCall.disconnect();
+                            activeCall.hold();
+                            return CompletableFuture.completedFuture(true);
+                        }
+                        disconnectFutureHfp = heldCall.disconnect();
+                        return disconnectFutureHfp
+                                .thenComposeAsync((result) -> {
+                                    if (result) {
+                                        return activeCall.hold().thenCompose((holdSuccess) -> {
+                                            if (holdSuccess) {
+                                                // Increase hold count only if hold succeeds.
+                                                call.increaseHeldByThisCallCount();
+                                            }
+                                            return CompletableFuture.completedFuture(holdSuccess);
+                                        });
+                                    }
+                                    return CompletableFuture.completedFuture(false);
+                                }, new LoggedHandlerExecutor(mHandler,
+                                       "CSC.hACFNCWS", mCallsManager.getLock()));
+                    } else {
+                        Log.i(this, "holdActiveCallForNewCall: disconnect active call");
+                        return activeCall.disconnect();
+                    }
+                }
+            }
             boolean isSequencingRequiredActiveAndCall = !arePhoneAccountsSame(call, activeCall);
             if (mCallsManager.canHold(activeCall)) {
                 CompletableFuture<Boolean> holdFuture = activeCall.hold("swap to " + call.getId());
@@ -343,8 +380,12 @@ public class CallSequencingController {
                         return CompletableFuture.completedFuture(false);
                     } else {
                         if (isSequencingRequiredActiveAndCall) {
-                            return activeCall.disconnect("Active call disconnected in favor of"
-                                    + " new call.");
+                            // Disconnect all calls with the same phone account as the active call
+                            // as they do would not support holding.
+                            Log.i(this, "Disconnecting non-holdable calls from account (%s).",
+                                    activeCall.getTargetPhoneAccount());
+                            return disconnectAllCallsWithPhoneAccount(
+                                    activeCall.getTargetPhoneAccount());
                         } else {
                             Log.i(this, "holdActiveCallForNewCallWithSequencing: "
                                     + "allowing ConnectionService to determine how to handle "
@@ -379,6 +420,7 @@ public class CallSequencingController {
         Call activeCall = (Call) mCallsManager.getConnectionServiceFocusManager()
                 .getCurrentFocusCall();
         String activeCallId = null;
+        boolean isHfpCallPresent = mCallsManager.isHfpCallPresent();
         boolean isSequencingRequiredActiveAndCall = false;
         if (activeCall != null && !activeCall.isLocallyDisconnecting()) {
             activeCallId = activeCall.getId();
@@ -415,7 +457,8 @@ public class CallSequencingController {
         }
 
         // Verify call state was changed to ACTIVE state
-        if (isSequencingRequiredActiveAndCall && unholdCallFutureHandler != null) {
+        if ((isSequencingRequiredActiveAndCall || isHfpCallPresent) &&
+            unholdCallFutureHandler != null) {
             String fixedActiveCallId = activeCallId;
             // Only attempt to unhold call if previous request to hold/disconnect call (on different
             // phone account) succeeded.
@@ -495,6 +538,12 @@ public class CallSequencingController {
             // Not likely, but a good correctness check.
             return CompletableFuture.completedFuture(true);
         }
+        // Disconnect all HFP calls to avoid an ACTIVE + ACTIVE conflict.
+        // BluetoothInCallService isn't guaranteed to hold calls
+        // and HFP calls are in a different phone account from
+        // cellular calls. It is safer to disconnect HFP calls here
+        // than to attempt to hold them.
+        mCallsManager.disconnectAllHfpCalls();
 
         if (mCallsManager.hasMaximumOutgoingCalls(emergencyCall)) {
             Call outgoingCall = mCallsManager.getFirstCallWithState(OUTGOING_CALL_STATES);
@@ -895,6 +944,25 @@ public class CallSequencingController {
                 && callToUnhold.getState() == CallState.ON_HOLD;
     }
 
+    private CompletableFuture<Boolean> disconnectAllCallsWithPhoneAccount(
+            PhoneAccountHandle handle) {
+        CompletableFuture<Boolean> disconnectFuture = CompletableFuture.completedFuture(true);
+        List<Call> calls = mCallsManager.getCalls().stream()
+                .filter(c -> c.getTargetPhoneAccount().equals(handle)).toList();
+        for (Call call: calls) {
+            // Wait for all disconnects before we accept the new call.
+            disconnectFuture = disconnectFuture.thenComposeAsync((result) -> {
+                if (!result) {
+                    Log.i(this, "disconnectAllCallsWithPhoneAccount: "
+                            + "Failed to disconnect %s.", call);
+                }
+                return call.disconnect("Un-holdable call " + call + " disconnected "
+                        + "in favor of new call.");
+            }, new LoggedHandlerExecutor(mHandler, "CSC.dACWPA", mCallsManager.getLock()));
+        }
+        return disconnectFuture;
+    }
+
     /**
      * Generic helper to log the result of the {@link CompletableFuture} containing the transactions
      * that are being processed in the context of call sequencing.
@@ -924,6 +992,28 @@ public class CallSequencingController {
             return true;
         }
         return false;
+    }
+
+    public void maybeAddAnsweringCallDropsFg(Call activeCall, Call incomingCall) {
+        // Don't set the extra when we have an incoming self-managed call that would potentially
+        // disconnect the active managed call.
+        if (activeCall == null || (incomingCall.isSelfManaged() && !activeCall.isSelfManaged())) {
+            return;
+        }
+        // Check if the active call doesn't support hold. If it doesn't we should indicate to the
+        // user via the EXTRA_ANSWERING_DROPS_FG_CALL extra that the call would be dropped by
+        // answering the incoming call.
+        if (!mCallsManager.supportsHold(activeCall)) {
+            CharSequence droppedApp = activeCall.getTargetPhoneAccountLabel();
+            Bundle dropCallExtras = new Bundle();
+            dropCallExtras.putBoolean(Connection.EXTRA_ANSWERING_DROPS_FG_CALL, true);
+
+            // Include the name of the app which will drop the call.
+            dropCallExtras.putCharSequence(
+                    Connection.EXTRA_ANSWERING_DROPS_FG_CALL_APP_NAME, droppedApp);
+            Log.i(this, "Incoming call will drop %s call.", droppedApp);
+            incomingCall.putConnectionServiceExtras(dropCallExtras);
+        }
     }
 
     private void showErrorDialogForMaxOutgoingCall(Call call) {
