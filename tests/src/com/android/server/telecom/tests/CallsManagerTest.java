@@ -103,6 +103,7 @@ import com.android.server.telecom.CallEndpointControllerFactory;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
+import com.android.server.telecom.callsequencing.CallSequencingController;
 import com.android.server.telecom.callsequencing.CallsManagerCallSequencingAdapter;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
@@ -3777,6 +3778,66 @@ public class CallsManagerTest extends TelecomTestCase {
         inOrder.verify(call).setState(eq(CallState.RINGING), anyString());
     }
 
+    @SmallTest
+    @Test
+    public void testSimultaneousCallType() {
+        when(mFeatureFlags.enableCallSequencing()).thenReturn(true);
+        // Setup CallsManagerCallSequencingAdapter
+        CallSequencingController sequencingController = mock(CallSequencingController.class);
+        CallAudioManager callAudioManager = mock(CallAudioManager.class);
+        CallsManagerCallSequencingAdapter adapter = new CallsManagerCallSequencingAdapter(
+                mCallsManager, mContext, sequencingController, callAudioManager, mFeatureFlags);
+        mCallsManager.setCallSequencingAdapter(adapter);
+        // Explicitly disable simultaneous calling
+        TelephonyManager mockTelephonyManager = mComponentContextFixture.getTelephonyManager();
+        when(mockTelephonyManager.getMaxNumberOfSimultaneouslyActiveSims()).thenReturn(1);
+
+        Call call1 = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        assertEquals(call1.getSimultaneousType(), Call.CALL_SIMULTANEOUS_DISABLED_SAME_ACCOUNT);
+
+        // Emulate adding another concurrent call on a different call when simultaneous calling
+        // isn't supported by the device.
+        Call call2 = addSpyCall(SIM_2_HANDLE, CallState.ON_HOLD);
+        assertEquals(call1.getSimultaneousType(), Call.CALL_SIMULTANEOUS_DISABLED_DIFF_ACCOUNT);
+        assertEquals(call2.getSimultaneousType(), Call.CALL_SIMULTANEOUS_DISABLED_DIFF_ACCOUNT);
+        mCallsManager.removeCall(call2);
+
+        // Now enable simultaneous calling and verify the updated call simultaneous types when
+        // adding another call.
+        when(mockTelephonyManager.getMaxNumberOfSimultaneouslyActiveSims()).thenReturn(2);
+        call2 = addSpyCall(SIM_1_HANDLE, CallState.ON_HOLD);
+        assertEquals(call1.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_SAME_ACCOUNT);
+        assertEquals(call2.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_SAME_ACCOUNT);
+
+        // Add a new call and remove the held one (emulation).
+        mCallsManager.removeCall(call2);
+        // Verify that the simultaneous call type priority of the 1st call has been upgraded.
+        Call call3 = addSpyCall(SIM_2_HANDLE, CallState.ACTIVE);
+        assertEquals(call1.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_DIFF_ACCOUNT);
+        assertEquals(call3.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_DIFF_ACCOUNT);
+
+        // Remove the first call and add another call with the same handle as the third call.
+        mCallsManager.removeCall(call1);
+        Call call4 = addSpyCall(SIM_2_HANDLE, CallState.ON_HOLD);
+        // Verify that call3's priority remains unchanged but call4's priority is
+        // Call.CALL_DIRECTION_DUAL_SAME_ACCOUNT.
+        assertEquals(call3.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_DIFF_ACCOUNT);
+        assertEquals(call4.getSimultaneousType(), Call.CALL_DIRECTION_DUAL_SAME_ACCOUNT);
+    }
+
+    @SmallTest
+    @Test
+    public void testPendingAccountSelectionNotClearedWithNewCall() {
+        Call ongoingCall = createSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        mCallsManager.getPendingAccountSelection().put(ongoingCall.getId(),
+                CompletableFuture.completedFuture(new Pair<>(ongoingCall, SIM_1_HANDLE)));
+        Call pendingCall = createSpyCall(SIM_1_HANDLE, CallState.SELECT_PHONE_ACCOUNT);
+        mCallsManager.getPendingAccountSelection().put(pendingCall.getId(),
+                CompletableFuture.completedFuture(new Pair<>(pendingCall, SIM_1_HANDLE)));
+        mCallsManager.processDisconnectCallAndCleanup(ongoingCall, CallState.DISCONNECTED);
+        assertFalse(mCallsManager.getPendingAccountSelection().containsKey(ongoingCall.getId()));
+        assertTrue(mCallsManager.getPendingAccountSelection().containsKey(pendingCall.getId()));
+    }
 
     private Call addSpyCall() {
         return addSpyCall(SIM_2_HANDLE, CallState.ACTIVE);

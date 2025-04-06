@@ -44,6 +44,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PackageTagsList;
+import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -106,6 +107,13 @@ public class InCallController extends CallsManagerListenerBase implements
             UUID.fromString("7d58dedf-b71d-4c18-9d23-47b434bde58b");
     public static final String NULL_IN_CALL_SERVICE_BINDING_ERROR_MSG =
             "InCallController#sendCallToInCallService with null InCallService binding";
+    public static final String QTI_DIALER_PACKAGE =
+            "org.codeaurora.dialer";
+    public static final String QTI_DIALER_INCALLSERVICE =
+            "com.android.incallui.InCallServiceImpl";
+    public static ComponentName qtiDialer = new ComponentName(
+            QTI_DIALER_PACKAGE, QTI_DIALER_INCALLSERVICE);
+    public static Call mCachedCall = null;
     @VisibleForTesting
     public void setAnomalyReporterAdapter(AnomalyReporterAdapter mAnomalyReporterAdapter){
         mAnomalyReporter = mAnomalyReporterAdapter;
@@ -361,6 +369,11 @@ public class InCallController extends CallsManagerListenerBase implements
             }
 
             Log.i(this, "Attempting to bind to InCall %s, with %s", mInCallServiceInfo, intent);
+            if (mInCallServiceInfo.getComponentName().equals(qtiDialer)) {
+                // Cache this call for dialer ICS as binding is taking time
+                mCachedCall = call;
+            }
+
             mIsConnected = true;
             mInCallServiceInfo.setBindingStartTime(mClockProxy.elapsedRealtime());
             boolean isManagedProfile = UserUtil.isManagedProfile(mContext,
@@ -1725,7 +1738,8 @@ public class InCallController extends CallsManagerListenerBase implements
 
                     try {
                         inCallService.updateCall(
-                                sanitizeParcelableCallForService(info, parcelableCall));
+                                copyIfLocal(sanitizeParcelableCallForService(info, parcelableCall),
+                                        inCallService));
                     } catch (RemoteException ignored) {
                     }
                 }
@@ -2651,6 +2665,13 @@ public class InCallController extends CallsManagerListenerBase implements
         List<Call> calls = orderCallsWithChildrenFirst(mCallsManager.getCalls().stream().filter(
                 call -> getUserFromCall(call).equals(userHandle))
                 .collect(Collectors.toUnmodifiableList()));
+        if (calls.isEmpty() && mCachedCall != null && info.getComponentName().equals(qtiDialer)) {
+            // If the call list is empty
+            // and yet onServiceConnected callback
+            // is received, this implies that the relevant ICS has not received the call updates
+            // Hence we are adding the cached call, to be sent to ICS.
+            calls.add(mCachedCall);
+        }
         Log.i(this, "Adding %s calls to InCallService after onConnected: %s, including external " +
                 "calls", calls.size(), info.getComponentName());
         int numCallsSent = 0;
@@ -2693,7 +2714,12 @@ public class InCallController extends CallsManagerListenerBase implements
             }
 
             // Track the call if we don't already know about it.
-            addCall(call);
+            if (call.getState() != android.telecom.Call.STATE_DISCONNECTED) {
+                // In the case of late binding for dialer ICS, when we call SendTOICS with
+                // a call in disconnected state, we should not add the call back in CallIdMapper
+                // to avoid a call already removed.
+                addCall(call);
+            }
             ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
                     call,
                     true /* includeVideoProvider */,
@@ -2715,6 +2741,10 @@ public class InCallController extends CallsManagerListenerBase implements
                 }
             } else {
                 inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
+            }
+            if (info.getComponentName().equals(qtiDialer) && mCachedCall != null) {
+                // Reset cached call once we are done sending to dialer ICS
+                mCachedCall = null;
             }
             updateCallTracking(call, info, true /* isAdd */);
             return 1;
@@ -2861,7 +2891,8 @@ public class InCallController extends CallsManagerListenerBase implements
             ParcelableCall parcelableCall, ComponentName componentName) {
         try {
             inCallService.updateCall(
-                    sanitizeParcelableCallForService(info, parcelableCall));
+                    copyIfLocal(sanitizeParcelableCallForService(info, parcelableCall),
+                            inCallService));
         } catch (RemoteException exception) {
             Log.w(this, "Call status update did not send to: "
                     + componentName + " successfully with error " + exception);
@@ -3441,5 +3472,44 @@ public class InCallController extends CallsManagerListenerBase implements
             }
         }
         return false;
+    }
+
+    /**
+     * Given a {@link ParcelableCall} and a {@link IInCallService}, determines if the ICS binder is
+     * local or remote.  If the binder is remote, we just return the parcelable call instance
+     * already constructed.
+     * If the binder if local, as will be the case for
+     * {@code EnhancedConfirmationCallTrackerService} (or any other ICS in the system server, the
+     * underlying Binder implementation is NOT going to parcel and unparcel the
+     * {@link ParcelableCall} instance automatically.  This means that the parcelable call instance
+     * is passed by reference and that the ICS in the system server could potentially try to access
+     * internals in the {@link ParcelableCall} in an unsafe manner.  As a workaround, we will
+     * manually parcel and unparcel the {@link ParcelableCall} instance so that they get a fresh
+     * copy that they can use safely.
+     *
+     * @param parcelableCall The ParcelableCall instance we want to maybe copy.
+     * @param remote the binder the call is going out over.
+     * @return either the original {@link ParcelableCall} or a deep copy of it if the destination
+     * binder is local.
+     */
+    private ParcelableCall copyIfLocal(ParcelableCall parcelableCall, IInCallService remote) {
+        // We care more about parceling than local (though they should be the same); so, use
+        // queryLocalInterface since that's what Binder uses to decide if it needs to parcel.
+        if (remote.asBinder().queryLocalInterface(IInCallService.Stub.DESCRIPTOR) == null) {
+            // No local interface, so binder itself will parcel and thus we don't need to.
+            return parcelableCall;
+        }
+        // Binder won't be parceling; however, the remotes assume they have their own native
+        // objects (and don't know if caller is local or not), so we need to make a COPY here so
+        // that the remote can clean it up without clearing the original transaction.
+        // Since there's no direct `copy` for Transaction, we have to parcel/unparcel instead.
+        final Parcel p = Parcel.obtain();
+        try {
+            parcelableCall.writeToParcel(p, 0);
+            p.setDataPosition(0);
+            return ParcelableCall.CREATOR.createFromParcel(p);
+        } finally {
+            p.recycle();
+        }
     }
 }

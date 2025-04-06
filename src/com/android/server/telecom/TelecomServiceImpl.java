@@ -198,6 +198,7 @@ public class TelecomServiceImpl {
         public void addCall(CallAttributes callAttributes, ICallEventCallback callEventCallback,
                 String callId, String callingPackage) {
             int uid = Binder.getCallingUid();
+            int pid = Binder.getCallingPid();
             ApiStats.ApiEvent event = new ApiStats.ApiEvent(ApiStats.API_ADDCALL,
                     uid, ApiStats.RESULT_PERMISSION);
             try {
@@ -217,7 +218,7 @@ public class TelecomServiceImpl {
                 // add extras about info used for FGS delegation
                 Bundle extras = new Bundle();
                 extras.putInt(CallAttributes.CALLER_UID_KEY, uid);
-                extras.putInt(CallAttributes.CALLER_PID_KEY, uid);
+                extras.putInt(CallAttributes.CALLER_PID_KEY, pid);
 
 
                 CompletableFuture<CallTransaction> transactionFuture;
@@ -1536,14 +1537,20 @@ public class TelecomServiceImpl {
             int callingUid = Binder.getCallingUid();
             int systemUiUid;
             if (mPackageManager != null && mSystemUiPackageName != null) {
+                long whosCalling = Binder.clearCallingIdentity();
                 try {
-                    systemUiUid = mPackageManager.getPackageUid(mSystemUiPackageName, 0);
-                    Log.i(TAG, "isSysUiUid: callingUid = " + callingUid + "; systemUiUid = "
-                            + systemUiUid);
-                    return isSameApp(callingUid, systemUiUid);
-                } catch (PackageManager.NameNotFoundException e) {
-                    Log.w(TAG, "isSysUiUid: caught PackageManager NameNotFoundException = " + e);
-                    return false;
+                    try {
+                        systemUiUid = mPackageManager.getPackageUid(mSystemUiPackageName, 0);
+                        Log.i(TAG, "isSysUiUid: callingUid = " + callingUid + "; systemUiUid = "
+                                + systemUiUid);
+                        return isSameApp(callingUid, systemUiUid);
+                    } catch (PackageManager.NameNotFoundException e) {
+                        Log.w(TAG,
+                                "isSysUiUid: caught PackageManager NameNotFoundException = " + e);
+                        return false;
+                    }
+                } finally {
+                    Binder.restoreCallingIdentity(whosCalling);
                 }
             } else {
                 Log.w(TAG, "isSysUiUid: caught null check and returned false; "
@@ -3323,19 +3330,22 @@ public class TelecomServiceImpl {
         try {
             pm = mContext.createContextAsUser(
                     UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
+
+            // This has to happen inside the scope of the `clearCallingIdentity` block
+            // otherwise the caller may fail to call `TelecomManager#endCall`.
+            if (pm != null) {
+                try {
+                    packageUid = pm.getPackageUid(packageName, 0);
+                } catch (PackageManager.NameNotFoundException e) {
+                    // packageUid is -1.
+                }
+            }
         } catch (Exception e) {
             Log.i(this, "callingUidMatchesPackageManagerRecords:"
                     + " createContextAsUser hit exception=[%s]", e.toString());
             return false;
         } finally {
             Binder.restoreCallingIdentity(token);
-        }
-        if (pm != null) {
-            try {
-                packageUid = pm.getPackageUid(packageName, 0);
-            } catch (PackageManager.NameNotFoundException e) {
-                // packageUid is -1.
-            }
         }
 
         if (packageUid != callingUid) {

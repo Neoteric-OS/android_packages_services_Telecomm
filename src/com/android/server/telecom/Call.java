@@ -144,10 +144,20 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private static final char NO_DTMF_TONE = '\0';
 
+    /**
+     * The following simultaneous call types will be set on each call on creation and may be updated
+     * according to priority level. CALL_DIRECTION_DUAL_DIFF_ACCOUNT holds the highest priority.
+     * So if for example, a call is created with CALL_DIRECTION_DUAL_SAME_ACCOUNT, it can be
+     * upgraded to CALL_DIRECTION_DUAL_DIFF_ACCOUNT if another call is added with a different phone
+     * account.
+     */
     public static final int CALL_SIMULTANEOUS_UNKNOWN = 0;
-    public static final int CALL_SIMULTANEOUS_SINGLE = 1;
-    public static final int CALL_DIRECTION_DUAL_SAME_ACCOUNT = 2;
-    public static final int CALL_DIRECTION_DUAL_DIFF_ACCOUNT = 3;
+    // Only used if simultaneous calling is not available
+    public static final int CALL_SIMULTANEOUS_DISABLED_SAME_ACCOUNT = 1;
+    // Only used if simultaneous calling is not available
+    public static final int CALL_SIMULTANEOUS_DISABLED_DIFF_ACCOUNT = 2;
+    public static final int CALL_DIRECTION_DUAL_SAME_ACCOUNT = 3;
+    public static final int CALL_DIRECTION_DUAL_DIFF_ACCOUNT = 4;
 
     /**
      * Listener for CallState changes which can be leveraged by a Transaction.
@@ -218,6 +228,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         default void onHoldToneRequested(Call call) {};
         default void onCallHoldFailed(Call call) {};
         default void onCallSwitchFailed(Call call) {};
+        default void onCallResumeFailed(Call call) {};
         default void onConnectionEvent(Call call, String event, Bundle extras) {};
         default void onCallStreamingStateChanged(Call call, boolean isStreaming) {}
         default void onExternalCallChanged(Call call, boolean isExternalCall) {};
@@ -307,6 +318,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onCallHoldFailed(Call call) {}
         @Override
         public void onCallSwitchFailed(Call call) {}
+        @Override
+        public void onCallResumeFailed(Call call) {}
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
@@ -537,6 +550,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     private int mSimultaneousType = CALL_SIMULTANEOUS_UNKNOWN;
 
+    /**
+     * Indicate whether the call has the video
+     */
+    boolean mHasVideoCall;
+
     private Bundle mIntentExtras = new Bundle();
 
     /**
@@ -656,6 +674,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private boolean mIsTransactionalCall = false;
     private CallingPackageIdentity mCallingPackageIdentity = new CallingPackageIdentity();
+    private boolean mSkipAutoUnhold = false;
 
     /**
      * CallingPackageIdentity is responsible for storing properties about the calling package that
@@ -2710,7 +2729,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return;
         }
         mCreateConnectionProcessor = new CreateConnectionProcessor(this, mRepository, this,
-                phoneAccountRegistrar, mContext, mFlags, new Timeouts.Adapter());
+                phoneAccountRegistrar, mCallsManager, mContext, mFlags, new Timeouts.Adapter());
         mCreateConnectionProcessor.process();
     }
 
@@ -3483,6 +3502,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 Log.addEvent(this, LogUtils.Events.VERSTAT_CHANGED, callerNumberVerificationStatus);
                 setCallerNumberVerificationStatus(callerNumberVerificationStatus);
             }
+        }
+
+        if (extras.containsKey(Connection.EXTRA_ANSWERING_DROPS_FG_CALL)) {
+            CharSequence appName =
+                    extras.getCharSequence(Connection.EXTRA_ANSWERING_DROPS_FG_CALL_APP_NAME);
+            Log.addEvent(this, LogUtils.Events.ANSWER_DROPS_FG,
+                    "Answering will drop FG call from %s", appName);
         }
 
         // The remote connection service API can track the phone account which was originally
@@ -4393,6 +4419,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         if (VideoProfile.isVideo(videoState)) {
+            mHasVideoCall = true;
             mAnalytics.setCallIsVideo(true);
         }
     }
@@ -4603,6 +4630,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         } else if (Connection.EVENT_CALL_SWITCH_FAILED.equals(event)) {
             for (Listener l : mListeners) {
                 l.onCallSwitchFailed(this);
+            }
+        } else if (Connection.EVENT_CALL_RESUME_FAILED.equals(event)) {
+            for (Listener l : mListeners) {
+                l.onCallResumeFailed(this);
             }
         } else if (Connection.EVENT_DEVICE_TO_DEVICE_MESSAGE.equals(event)
                 && extras != null && extras.containsKey(
@@ -5215,5 +5246,26 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public int getSimultaneousType() {
         return mSimultaneousType;
+    }
+
+    public boolean hasVideoCall() {
+        return mHasVideoCall;
+    }
+
+    /**
+     * Used only for call sequencing for cases when we may end up auto-unholding the held call while
+     * processing an outgoing (emergency) call. We want to refrain from unholding the held call so
+     * that we don't end up with two active calls. Once the outgoing call is disconnected (either
+     * from a successful disconnect by the user or a failed call), the auto-unhold logic will be
+     * triggered again and successfully unhold the held call at that point. Note, that this only
+     * applies to non-holdable phone accounts (i.e. Verizon). Refer to
+     * {@link CallsManagerCallSequencingAdapter#maybeMoveHeldCallToForeground} for details.
+     */
+    public void setSkipAutoUnhold(boolean result) {
+        mSkipAutoUnhold = result;
+    }
+
+    public boolean getSkipAutoUnhold() {
+        return mSkipAutoUnhold;
     }
 }

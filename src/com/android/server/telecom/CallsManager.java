@@ -450,7 +450,10 @@ public class CallsManager extends Call.ListenerBase
             new ConcurrentHashMap<>();
 
     private CompletableFuture<Call> mPendingCallConfirm;
-    private CompletableFuture<Pair<Call, PhoneAccountHandle>> mPendingAccountSelection;
+    // Map the call's id to the corresponding pending account selection future associated with the
+    // call.
+    private final Map<String, CompletableFuture<Pair<Call, PhoneAccountHandle>>>
+            mPendingAccountSelection;
 
     // Instance variables for testing -- we keep the latest copy of the outgoing call futures
     // here so that we can wait on them in tests
@@ -526,7 +529,7 @@ public class CallsManager extends Call.ListenerBase
     private final UserManager mUserManager;
     private final CallStreamingNotification mCallStreamingNotification;
     private final BlockedNumbersManager mBlockedNumbersManager;
-    private final CallsManagerCallSequencingAdapter mCallSequencingAdapter;
+    private CallsManagerCallSequencingAdapter mCallSequencingAdapter;
     private final FeatureFlags mFeatureFlags;
     private final com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
 
@@ -766,7 +769,8 @@ public class CallsManager extends Call.ListenerBase
                                         audioManager.generateAudioSessionId()));
         InCallTonePlayer.Factory playerFactory = new InCallTonePlayer.Factory(
                 callAudioRoutePeripheralAdapter, lock, toneGeneratorFactory, mediaPlayerFactory,
-                () -> audioManager.getStreamVolume(AudioManager.STREAM_RING) > 0, featureFlags);
+                () -> audioManager.getStreamVolume(AudioManager.STREAM_RING) > 0, featureFlags,
+                Looper.getMainLooper());
 
         SystemSettingsUtil systemSettingsUtil = new SystemSettingsUtil();
         RingtoneFactory ringtoneFactory = new RingtoneFactory(this, context, featureFlags);
@@ -832,7 +836,7 @@ public class CallsManager extends Call.ListenerBase
                 : null;
         mCallSequencingAdapter = new CallsManagerCallSequencingAdapter(this, mContext,
                 new CallSequencingController(this, mContext, mClockProxy,
-                        mAnomalyReporter, mTimeoutsAdapter, mMetricsController,
+                        mAnomalyReporter, mTimeoutsAdapter, mMetricsController, mMmiUtils,
                         mFeatureFlags), mCallAudioManager, mFeatureFlags);
 
         if (mFeatureFlags.useImprovedListenerOrder()) {
@@ -890,6 +894,8 @@ public class CallsManager extends Call.ListenerBase
         mCallAnomalyWatchdog = callAnomalyWatchdog;
         mAsyncTaskExecutor = asyncTaskExecutor;
         mUserManager = mContext.getSystemService(UserManager.class);
+        mPendingAccountSelection = new HashMap<>();
+
 // QTI_BEGIN: 2018-08-07: Telephony: IMS: Keep speaker status same as common VoLTE call for VoLTE call video CRBT
         QtiCarrierConfigHelper.getInstance().setup(mContext);
 // QTI_END: 2018-08-07: Telephony: IMS: Keep speaker status same as common VoLTE call for VoLTE call video CRBT
@@ -1555,6 +1561,14 @@ public class CallsManager extends Call.ListenerBase
     @Override
     public void onCallSwitchFailed(Call call) {
         markAllAnsweredCallAsRinging(call, "switch");
+    }
+
+    @Override
+    public void onCallResumeFailed(Call call) {
+        Call heldCall = getFirstCallWithState(call, true /* skipSelfManaged */, CallState.ON_HOLD);
+        if (heldCall != null) {
+            mCallSequencingAdapter.handleCallResumeFailed(call, heldCall);
+        }
     }
 
     private void markAllAnsweredCallAsRinging(Call call, String actionName) {
@@ -2308,12 +2322,15 @@ public class CallsManager extends Call.ListenerBase
                 potentialPhoneAccounts -> {
                     Log.i(CallsManager.this, "make room for outgoing call stage");
                     if (mMmiUtils.isPotentialInCallMMICode(handle) && !isSelfManaged) {
+                        // We will allow the MMI code if call sequencing is not enabled or there
+                        // are only calls on the same phone account.
                         boolean shouldAllowMmiCode = mCallSequencingAdapter
                                 .shouldAllowMmiCode(finalCall);
                         if (shouldAllowMmiCode) {
                             return CompletableFuture.completedFuture(true);
                         } else {
-                            Log.i(this, "Rejecting the MMI code because there is an "
+                            // Reject the in-call MMI code.
+                            Log.i(this, "Rejecting the in-call MMI code because there is an "
                                     + "ongoing call on a different phone account.");
                             return CompletableFuture.completedFuture(false);
                         }
@@ -2349,6 +2366,10 @@ public class CallsManager extends Call.ListenerBase
                                     finalCall.getTargetPhoneAccount(), finalCall);
                         }
                         finalCall.setStartFailCause(CallFailureCause.IN_EMERGENCY_CALL);
+                        // Show an error message when dialing a MMI code during an emergency call.
+                        if (mMmiUtils.isPotentialMMICode(handle)) {
+                            showErrorMessage(R.string.emergencyCall_reject_mmi);
+                        }
                         return CompletableFuture.completedFuture(false);
                     }
 
@@ -2520,11 +2541,12 @@ public class CallsManager extends Call.ListenerBase
                                     android.telecom.Call.EXTRA_SUGGESTED_PHONE_ACCOUNTS,
                                     accountSuggestions);
                             // Set a future in place so that we can proceed once the dialer replies.
-                            mPendingAccountSelection = new CompletableFuture<>();
+                            mPendingAccountSelection.put(callToPlace.getId(),
+                                    new CompletableFuture<>());
                             callToPlace.setIntentExtras(newExtras);
 
                             addCall(callToPlace);
-                            return mPendingAccountSelection;
+                            return mPendingAccountSelection.get(callToPlace.getId());
                         }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.dSPA", mLock));
 
         // Potentially perform call identification for dialed TEL scheme numbers.
@@ -3739,10 +3761,12 @@ public class CallsManager extends Call.ListenerBase
             mPendingCallConfirm.complete(null);
             mPendingCallConfirm = null;
         }
-        if (mPendingAccountSelection != null && !mPendingAccountSelection.isDone()) {
-            mPendingAccountSelection.complete(null);
-            mPendingAccountSelection = null;
+        String callId = call.getId();
+        if (mPendingAccountSelection.containsKey(callId)
+                && !mPendingAccountSelection.get(callId).isDone()) {
+            mPendingAccountSelection.get(callId).complete(null);
         }
+        mPendingAccountSelection.remove(callId);
     }
     /**
      * Disconnects calls for any other {@link PhoneAccountHandle} but the one specified.
@@ -4219,9 +4243,10 @@ public class CallsManager extends Call.ListenerBase
                         .setUserSelectedOutgoingPhoneAccount(account, call.getAssociatedUser());
             }
 
-            if (mPendingAccountSelection != null) {
-                mPendingAccountSelection.complete(Pair.create(call, account));
-                mPendingAccountSelection = null;
+            String callId = call.getId();
+            if (mPendingAccountSelection.containsKey(callId)) {
+                mPendingAccountSelection.get(callId).complete(Pair.create(call, account));
+                mPendingAccountSelection.remove(callId);
             }
         }
     }
@@ -5175,6 +5200,9 @@ public class CallsManager extends Call.ListenerBase
         Log.i(this, "addCall(%s)", call);
         call.addListener(this);
         mCalls.add(call);
+        // Reprocess the simultaneous call types for all the tracked calls after having added a new
+        // call.
+        mCallSequencingAdapter.processSimultaneousCallTypes(mCalls);
         mSelfManagedCallsBeingSetup.remove(call);
 
         // Specifies the time telecom finished routing the call. This is used by the dialer for
@@ -7596,6 +7624,11 @@ public class CallsManager extends Call.ListenerBase
         return mCallSequencingAdapter;
     }
 
+    @VisibleForTesting
+    public void setCallSequencingAdapter(CallsManagerCallSequencingAdapter adapter) {
+        mCallSequencingAdapter = adapter;
+    }
+
     public void waitForAudioToUpdate(boolean expectActive) {
         Log.i(this, "waitForAudioToUpdate");
         if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
@@ -7613,5 +7646,11 @@ public class CallsManager extends Call.ListenerBase
                 Log.w(this, e.toString());
             }
         }
+    }
+
+    @VisibleForTesting
+    public Map<String, CompletableFuture<Pair<Call, PhoneAccountHandle>>>
+    getPendingAccountSelection() {
+        return mPendingAccountSelection;
     }
 }
